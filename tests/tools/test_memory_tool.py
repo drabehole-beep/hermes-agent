@@ -706,3 +706,75 @@ class TestBomToleranceInMemoryFiles:
         raw, read_ok = MemoryStore._read_raw_checked(path)
         assert read_ok is False
         assert raw == ""
+
+
+# =========================================================================
+# Working-cap enforcement (Fable Protocol / memory_guard.py integration)
+# =========================================================================
+
+def _write_working_caps(tmp_path, memory_wc, user_wc):
+    """Write a memory-caps.txt (single source of truth) into the memory dir."""
+    (tmp_path / "memory-caps.txt").write_text(
+        "MEMORY.md\n"
+        f"  working_cap: {memory_wc}\n"
+        "  hard_limit: 4400\n"
+        "  headroom_floor: 3960\n\n"
+        "USER.md\n"
+        f"  working_cap: {user_wc}\n"
+        "  hard_limit: 2750\n"
+        "  headroom_floor: 2475\n",
+        encoding="utf-8",
+    )
+
+
+class TestWorkingCapEnforcement:
+    """The memory TOOL must refuse a write that crosses the WORKING cap from
+    memory-caps.txt, even when the configured hard limit is higher. This is
+    the guard-bypass fix Fable directed: previously the tool only enforced the
+    config limit (4400/2750), so the working caps (3000/2100) were dead code.
+    """
+
+    def test_add_refused_at_working_cap_not_config_limit(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        # Working cap = 100; configured limit is much higher (1000). The tool
+        # must refuse once it would cross 100, NOT wait until 1000.
+        _write_working_caps(tmp_path, memory_wc=100, user_wc=300)
+        s = MemoryStore(memory_char_limit=1000, user_char_limit=1000)
+        s.load_from_disk()
+
+        # First entry fits under the 100 working cap.
+        r1 = s.add("memory", "a" * 60)
+        assert r1["success"] is True
+
+        # Adding another 60 chars would push past 100 → refused by the working cap.
+        r2 = s.add("memory", "b" * 60)
+        assert r2["success"] is False
+        assert "exceed" in r2["error"].lower()
+        assert "100" in r2["error"]  # working cap surfaced, not 1000
+        # Nothing beyond the first entry landed.
+        assert len(s.memory_entries) == 1
+
+    def test_replace_refused_when_crossing_working_cap(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        _write_working_caps(tmp_path, memory_wc=100, user_wc=300)
+        s = MemoryStore(memory_char_limit=1000, user_char_limit=1000)
+        s.load_from_disk()
+        s.add("memory", "a" * 60)
+
+        # Replace the 60-char entry with a 200-char one → crosses 100 working cap.
+        r = s.replace("memory", "a" * 60, "b" * 200)
+        assert r["success"] is False
+        assert "100" in r["error"]  # working cap surfaced, not 1000
+        # The working cap (100) is named, proving it overrides the config 1000.
+        assert "1000" not in r["error"]
+        assert "make room" in r["error"].lower()
+
+    def test_working_cap_absent_falls_back_to_config_limit(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        # No memory-caps.txt → tool uses the configured limit (500).
+        s = MemoryStore(memory_char_limit=500, user_char_limit=300)
+        s.load_from_disk()
+        s.add("memory", "x" * 490)
+        r = s.add("memory", "this exceeds")
+        assert r["success"] is False
+        assert "500" in r["error"]  # config limit en route, not a caps value
