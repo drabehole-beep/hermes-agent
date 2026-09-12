@@ -173,7 +173,49 @@ class MemoryStore:
         return len(ENTRY_DELIMITER.join(self._entries_for(target)))
 
     def _char_limit(self, target: str) -> int:
+        """Enforced char budget for a target store.
+
+        Priority: the WORKING cap from memory-caps.txt if present (single
+        source of truth; set by the Fable Protocol / memory_guard.py), else
+        the configured limit. Reading via memory_tool.get_memory_dir() keeps
+        this test-isolatable (tests monkeypatch get_memory_dir to a temp dir
+        with no caps file, so they fall back to the configured limit).
+        """
+        wc = self._working_cap_from_caps_file(target)
+        if wc is not None:
+            return wc
         return self.user_char_limit if target == "user" else self.memory_char_limit
+
+    @staticmethod
+    def _working_cap_from_caps_file(target: str) -> Optional[int]:
+        """Return the working_cap for a store from memory-caps.txt, or None.
+
+        Parses the same format memory_guard.py reads. The store is keyed by
+        filename (MEMORY.md / USER.md). Falls back to None when the caps file
+        is absent or the store has no working_cap entry, so the caller uses
+        the configured limit.
+        """
+        store = "USER.md" if target == "user" else "MEMORY.md"
+        from tools import memory_tool  # get_memory_dir is monkeypatched there
+        caps_path = memory_tool.get_memory_dir() / "memory-caps.txt"
+        if not caps_path.exists():
+            return None
+        try:
+            cur_store = None
+            for raw in caps_path.read_text(encoding="utf-8").splitlines():
+                line = raw.strip()
+                parts = line.split()
+                if not parts:
+                    continue
+                if parts[0] in ("MEMORY.md", "USER.md"):
+                    cur_store = parts[0]
+                    continue
+                if cur_store == store and line.startswith("working_cap:"):
+                    n = int(line.split(":")[1].strip().split()[0])
+                    return n
+        except (ValueError, OSError):
+            return None
+        return None
 
     def _usage(self, target: str) -> str:
         return f"{self._char_count(target):,}/{self._char_limit(target):,}"
