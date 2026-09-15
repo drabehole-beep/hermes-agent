@@ -454,20 +454,6 @@ def _mutate_and_emit(skill_name: str, action: str, mutator: Callable[[Dict[str, 
     """``_mutate`` then emit *action* with the mutator's facts as the record — only if the write landed."""
     if isinstance(facts := _mutate(skill_name, mutator), dict):
         _emit_skill_lifecycle(skill_name, action, record=facts, **hook_kwargs)
-        if action not in {"loaded", "patched", "edited", "created"}:
-            return
-        try:
-            from hermes_wisdom.qualification import record_mutation_async, record_successful_use_async
-
-            task_id = hook_kwargs.get("task_id")
-            session_id = hook_kwargs.get("session_id")
-            if action == "loaded":
-                # Invocation callers use task_id as the live transcript owner.
-                record_successful_use_async(skill_name, task_id=task_id, session_id=session_id or task_id)
-            else:
-                record_mutation_async(skill_name, task_id=task_id, session_id=session_id)
-        except Exception:
-            logger.debug("Wisdom qualification failed for %s/%s", skill_name, action, exc_info=True)
 
 
 # --- Counter bumps — telemetry for ALL skills regardless of provenance (observability only) ---
@@ -502,10 +488,15 @@ def bump_patch(skill_name: str, *, action: str = "patch", task_id: Optional[str]
 
 def record_created(skill_name: str, *, agent_created: bool, task_id: Optional[str] = None,
                    session_id: Optional[str] = None) -> None:
-    """Persist creation provenance and emit a create fact; the record is reset (a create is a new logical skill)."""
+    """Persist creation provenance and emit a create fact; the record is reset (a create is a new logical skill).
+
+    Foreground creates (``agent_created=False`` — e.g. ``/learn`` at the user's request) are stamped
+    ``created_by="learn"``: a learning-signal marker, NOT the curator-management opt-in (``"agent"``),
+    so /journey can show user-taught skills without handing them to autonomous curation.
+    """
     def _apply(rec: Dict[str, Any]) -> Dict[str, Any]:
         rec.clear()
-        rec.update(_empty_record(), created_by="agent" if agent_created else None)
+        rec.update(_empty_record(), created_by="agent" if agent_created else "learn")
         return {"created_by": rec["created_by"]}
     _mutate_and_emit(skill_name, "created", _apply, task_id=task_id, session_id=session_id)
 
