@@ -1261,6 +1261,69 @@ describe('preserveLocalPendingTurnMessages', () => {
       'assistant-stream-live'
     ])
   })
+
+  // Fable 2026-09-24, triple-render repro: toChatMessages folds a whole tool
+  // turn (lead-in prose + tool call + final answer) into ONE committed row
+  // while the live turn leaves 2-3 local bubbles. Ordinal pairing misses and
+  // the equality/startsWith fallbacks miss too, so every local bubble used to
+  // re-append: answer x3, tool card x2 on screen.
+  describe('folded committed tool turn vs multi-bubble live turn (Fable 2026-09-24)', () => {
+    const leadin = 'Let me check the logs'
+    const final = 'Here is what I found'
+
+    // The committed row's text joins the folded bubbles on a blank line, so
+    // each local bubble's text sits INSIDE the committed text, not beside it.
+    const committedTurn = (id: string, withLeadIn: boolean): ChatMessage =>
+      ({
+        id,
+        role: 'assistant',
+        parts: [
+          ...(withLeadIn ? [{ type: 'text', text: `${leadin}\n\n` } as ChatMessagePart] : []),
+          { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal', result: 'done' } as ChatMessagePart,
+          { type: 'text', text: final } as ChatMessagePart
+        ]
+      }) as ChatMessage
+
+    const localBubbles = (): ChatMessage[] => [
+      msg('user-1', 'user', 'check the logs'),
+      msg('assistant-stream-1', 'assistant', leadin, { interim: true, pending: false }),
+      streamingMsg('assistant-stream-2', final, { pending: false })
+    ]
+
+    it('a) drops the sealed interim lead-in and settled stream bubble once the combined committed row lands', () => {
+      const next = [msg('user-stored', 'user', 'check the logs'), committedTurn('committed-1', true)]
+
+      const result = preserveLocalPendingTurnMessages(next, localBubbles())
+
+      expect(result.map(message => message.id)).toEqual(['user-stored', 'committed-1'])
+      expect(chatMessageText(result[1]).split(final)).toHaveLength(2)
+      expect(result[1].parts.filter(part => part.type === 'tool-call')).toHaveLength(1)
+    })
+
+    it('b) also drops the leftover inflight flat dump row on mid-turn resume', () => {
+      const next = [msg('user-stored', 'user', 'check the logs'), committedTurn('committed-1', true)]
+
+      const result = preserveLocalPendingTurnMessages(next, [
+        ...localBubbles(),
+        msg('assistant-stream-runtime-1', 'assistant', `${leadin}\n\n${final}`, { pending: true })
+      ])
+
+      expect(result.map(message => message.id)).toEqual(['user-stored', 'committed-1'])
+      expect(chatMessageText(result[1]).split(final)).toHaveLength(2)
+      expect(result[1].parts.filter(part => part.type === 'tool-call')).toHaveLength(1)
+    })
+
+    it('c) control: no lead-in (committed = tool + final only) still dedupes', () => {
+      const next = [msg('user-stored', 'user', 'check the logs'), committedTurn('committed-1', false)]
+
+      const result = preserveLocalPendingTurnMessages(next, [
+        msg('user-1', 'user', 'check the logs'),
+        streamingMsg('assistant-stream-2', final, { pending: false })
+      ])
+
+      expect(result.map(message => message.id)).toEqual(['user-stored', 'committed-1'])
+    })
+  })
 })
 
 describe('appendLiveSessionProjection', () => {

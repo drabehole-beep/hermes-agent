@@ -542,6 +542,28 @@ export function preserveLocalPendingTurnMessages(
     return nextMessages
   }
 
+  // Fable 2026-09-24 (triple-render spec): the committed transcript folds a
+  // whole tool turn into ONE assistant row while the live turn leaves 2-3
+  // local bubbles, so ordinal pairing and equality/startsWith text fallbacks
+  // all miss and line N re-appends the local rows (answer x3, tool card x2).
+  // Whitespace-normalized CONTAINMENT against the turn's committed rows is
+  // the matching that survives the fold.
+  const normalizeTurnText = (s: string) => s.replace(/\s+/g, ' ').trim()
+
+  // Committed assistant rows of the turn the local tail belongs to: everything
+  // after the last authoritative user row, live projection shells excluded.
+  // (System markers are role-user but not prompts — skip them, same as the
+  // role-ordinal map below.)
+  let lastAuthUserIndex = -1
+  nextMessages.forEach((message, index) => {
+    if (message.role === 'user' && !isGatewaySystemMarker(message)) {
+      lastAuthUserIndex = index
+    }
+  })
+  const committedTurnRows = nextMessages
+    .slice(lastAuthUserIndex + 1)
+    .filter(message => message.role === 'assistant' && !isLiveTailRow(message))
+
   const nextByRoleOrdinal = new Map<string, ChatMessage>()
   const nextRoleCounts = new Map<ChatMessage['role'], number>()
 
@@ -653,11 +675,16 @@ export function preserveLocalPendingTurnMessages(
     if (
       isPendingAssistant &&
       message.pending !== true &&
-      nextMessages.some(
-        candidate =>
-          candidate.role === 'assistant' &&
-          textWithoutReferenceLines(chatMessageText(candidate)) === textWithoutReferenceLines(chatMessageText(message))
-      )
+      committedTurnRows.some(candidate => {
+        // #70209, widened by Fable 2026-09-24: normalized containment, not
+        // exact equality — the committed row folds lead-in prose + tool call
+        // + final text into one row, so the settled bubble's text sits
+        // INSIDE it rather than beside it.
+        const candidateText = normalizeTurnText(textWithoutReferenceLines(chatMessageText(candidate)))
+        const localText = normalizeTurnText(textWithoutReferenceLines(chatMessageText(message)))
+
+        return localText.length > 0 && candidateText.includes(localText)
+      })
     ) {
       continue
     }
@@ -732,6 +759,25 @@ export function preserveLocalPendingTurnMessages(
           id: committedPrefix.id
         })
 
+        continue
+      }
+
+      // Fable 2026-09-24: last line of defense before re-appending. The local
+      // row's text (lead-in prose or the final answer) can sit INSIDE the
+      // committed combined row without being its prefix (equality and
+      // startsWith both miss), which is how one turn rendered answer x3 and
+      // tool card x2. committedPrefix stays ABOVE this drop on purpose: a
+      // local row strictly LONGER than the committed one is richer and must
+      // replace, not drop — containment cannot fire there since the local
+      // text is longer.
+      const localNormalized = normalizeTurnText(nextText)
+
+      if (
+        localNormalized.length > 0 &&
+        committedTurnRows.some(candidate =>
+          normalizeTurnText(textWithoutReferenceLines(chatMessageText(candidate))).includes(localNormalized)
+        )
+      ) {
         continue
       }
     }
