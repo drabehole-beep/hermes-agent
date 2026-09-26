@@ -1861,3 +1861,83 @@ describe('preserveEquivalentTranscript', () => {
     expect(preserveEquivalentTranscript(current, next)).toBe(next)
   })
 })
+
+describe('vanishing replies: zero-length committed assistant rows (Fable spec 2026-09-26)', () => {
+  // The reply text mirrors the actual vanished answers (state.db rows 133024
+  // and 133028, session 20260926_064714_bb36d8). The painted bubble is a
+  // settled stream row; the committed transcript is what a refresh returns.
+  const REPLY = 'No data lost, and no new break found. Full verification with row IDs and paths.'
+
+  const renderedCopies = (result: ChatMessage[], text: string): number =>
+    result.filter(message => message.role === 'assistant' && chatMessageText(message).trim() === text).length
+
+  it('keeps the painted reply when the committed transcript carries it and the NEXT turn opens with an empty assistant row', () => {
+    // Exact shape from rows 133024 (full reply) -> 133025 (user) -> 133026 (empty lead-in).
+    const next = [
+      msg('user-stored-1', 'user', 'status?'),
+      msg('committed-1', 'assistant', REPLY),
+      msg('user-stored-2', 'user', 'how do we fix the renderer bug?'),
+      msg('committed-empty-1', 'assistant', '')
+    ]
+    const previous = [
+      msg('user-local-1', 'user', 'status?'),
+      msg('assistant-stream-1', 'assistant', REPLY, { pending: false })
+    ]
+
+    const result = preserveLocalPendingTurnMessages(next, previous)
+
+    expect(renderedCopies(result, REPLY)).toBe(1)
+  })
+
+  it('keeps the painted reply when the committed turn folds an empty lead-in row BEFORE the answer', () => {
+    // Exact shape from rows 133025 (user) -> 133026 (empty) -> 133028 (full reply).
+    const next = [
+      msg('user-stored-1', 'user', 'status?'),
+      msg('committed-empty-1', 'assistant', ''),
+      msg('committed-1', 'assistant', REPLY)
+    ]
+    const previous = [
+      msg('user-local-1', 'user', 'status?'),
+      msg('assistant-stream-1', 'assistant', REPLY, { pending: false })
+    ]
+
+    const result = preserveLocalPendingTurnMessages(next, previous)
+
+    expect(renderedCopies(result, REPLY)).toBe(1)
+  })
+
+  it('keeps the painted reply when a zero-length committed row reuses the painted bubble id', () => {
+    const next = [
+      msg('user-stored-1', 'user', 'status?'),
+      msg('assistant-stream-1', 'assistant', '', { pending: false })
+    ]
+    const previous = [
+      msg('user-local-1', 'user', 'status?'),
+      msg('assistant-stream-1', 'assistant', REPLY, { pending: false })
+    ]
+
+    const result = preserveLocalPendingTurnMessages(next, previous)
+
+    expect(renderedCopies(result, REPLY)).toBe(1)
+  })
+
+  it('keeps the painted reply when the local tail is the streamed turn (lead-in + answer) against a folded empty-row commit', () => {
+    // Live tail shape: the painted turn carries an empty lead-in stream row and
+    // the full answer; the commit folds the same turn with an empty row first.
+    const next = [
+      msg('user-stored-1', 'user', 'status?'),
+      msg('committed-empty-1', 'assistant', ''),
+      msg('committed-1', 'assistant', REPLY),
+      msg('committed-empty-2', 'assistant', '')
+    ]
+    const previous = [
+      msg('user-local-1', 'user', 'status?'),
+      msg('assistant-stream-lead', 'assistant', '', { pending: false }),
+      msg('assistant-stream-1', 'assistant', REPLY, { pending: false })
+    ]
+
+    const result = preserveLocalPendingTurnMessages(next, previous)
+
+    expect(renderedCopies(result, REPLY)).toBe(1)
+  })
+})
