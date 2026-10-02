@@ -404,6 +404,45 @@ describe('AppContextMenu', () => {
     expect($contextMenu.get()).toBeNull()
   })
 
+  it('keeps the app menu for an owned gesture inside a radix trigger (zone-body Copy)', async () => {
+    const contextMenuEdit = vi.fn().mockResolvedValue(undefined)
+
+    installBridge({ contextMenuEdit: contextMenuEdit as unknown as Window['hermesDesktop']['contextMenuEdit'] })
+    // The zone menu is served from the pane body (tree-group ZoneMenu wrap):
+    // every chat right-click sits inside a ContextMenuTrigger. An editable
+    // with a selection must still open the app menu — Copy lives there.
+    render(
+      <MemoryRouter>
+        <AppContextMenu />
+        <ContextMenu>
+          <ContextMenuTrigger asChild>
+            <div data-zone-body="z">
+              <textarea aria-label="zone textarea">pick some of this</textarea>
+            </div>
+          </ContextMenuTrigger>
+        </ContextMenu>
+      </MemoryRouter>
+    )
+    const textarea = screen.getByLabelText('zone textarea') as HTMLTextAreaElement
+
+    textarea.setSelectionRange(0, 4)
+    fireEvent.contextMenu(textarea)
+
+    fireEvent.click(await screen.findByText('Copy'))
+
+    await waitFor(() => expect(contextMenuEdit).toHaveBeenCalledWith('copy'))
+  })
+
+  it('still defers a bare right-click inside a radix trigger to that surface', () => {
+    installBridge()
+    mountMenu()
+    const host = attach('<div data-hermes-context-menu-trigger=""><p>zone body</p></div>')
+
+    fireEvent.contextMenu(host.querySelector('p')!)
+
+    expect($contextMenu.get()).toBeNull()
+  })
+
   it('shows the terminal menu through a registered handle', async () => {
     installBridge()
     mountMenu()

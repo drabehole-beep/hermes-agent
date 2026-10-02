@@ -624,17 +624,10 @@ export function AppContextMenu() {
     const onContextMenu = (event: MouseEvent) => {
       const element = event.target instanceof Element ? event.target : null
 
-      // Surfaces with their own Radix context menu keep the whole gesture.
-      // Guard the dedicated marker first: Radix `asChild` Slot merges
-      // `mergeProps(slotProps, childProps)` so the child's `data-slot` wins
-      // (status bar footer is `data-slot="statusbar"`). The marker is stamped
-      // after `{...props}` on ContextMenuTrigger and is not overwritten.
-      if (element?.closest(`[${HERMES_CONTEXT_MENU_TRIGGER_ATTR}], [data-slot="context-menu-trigger"]`)) {
-        return
-      }
-
       // A terminal's canvas has no DOM to resolve; its registered handle
-      // carries the xterm selection and paste path instead.
+      // carries the xterm selection and paste path instead. Terminals sit
+      // inside pane bodies, and since the zone menu is served from the body
+      // too (#92500) its Radix trigger would otherwise shadow this menu.
       const terminal = terminalMenuHandleFor(element)
 
       if (terminal) {
@@ -644,13 +637,30 @@ export function AppContextMenu() {
         return
       }
 
+      // Resolve what the click landed on BEFORE deferring to a Radix
+      // surface: since ad2d4822e1 every chat right-click sits inside the
+      // zone body's `context-menu-trigger`. Owned gestures (selection,
+      // editable, link, image) must keep the app menu — Copy/Cut/Paste and
+      // the link/image verbs live here — while a bare click still hands the
+      // gesture to the Radix surface the trigger wraps.
       const target = resolveDomTarget(element)
       const owned = Boolean(target.linkUrl || target.onImage || target.editable || target.selectionText)
 
-      // The reaction bubble owns bare right-clicks; a link inside it still
-      // opens the link menu.
-      if (!owned && element?.closest(`[${CONTEXT_MENU_SKIP_ATTR}]`)) {
-        return
+      if (!owned) {
+        // Surfaces with their own Radix context menu keep the whole gesture.
+        // Guard the dedicated marker first: Radix `asChild` Slot merges
+        // `mergeProps(slotProps, childProps)` so the child's `data-slot` wins
+        // (status bar footer is `data-slot="statusbar"`). The marker is stamped
+        // after `{...props}` on ContextMenuTrigger and is not overwritten.
+        if (element?.closest(`[${HERMES_CONTEXT_MENU_TRIGGER_ATTR}], [data-slot="context-menu-trigger"]`)) {
+          return
+        }
+
+        // The reaction bubble owns bare right-clicks; a link inside it still
+        // opens the link menu.
+        if (element?.closest(`[${CONTEXT_MENU_SKIP_ATTR}]`)) {
+          return
+        }
       }
 
       event.stopPropagation()
